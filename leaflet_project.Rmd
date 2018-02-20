@@ -1,0 +1,169 @@
+---
+title: "Leaflet Demonstration Project"
+date: "February 18, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+```
+
+#### Project Summary
+
+This project is a simple demonstration of the interactive map package for R, Leaflet. It uses National Park visitation data for select national parks in the continental United States. The project embeds an interactive Leaflet plot in a Shiny App to provide further interactivity in the form of a slider bar that allows users to select a year.
+
+
+```{r  echo=FALSE, }
+# load packages
+library(ggmap)
+library(leaflet)
+library(readr)
+library(reshape2)
+library(rgdal)
+library(shiny)
+```
+
+
+```{r get base data, echo=FALSE}
+
+# Load Parks Visitorship data
+parks1 <- read_csv("annual_park_visitation_1979_1996.csv")
+parks2 <- read_csv("annual_park_visitation_1997_2016.csv")
+
+# Melt data
+parks1_melted <- melt(parks1, id.vars=c("park_name"), 
+                      variable.name="year",
+                      value.name="visits")
+
+parks2_melted <- melt(parks2, id.vars=c("park_name"), 
+                      variable.name="year",
+                      value.name="visits")
+
+parks <- rbind(parks1_melted, parks2_melted)  
+```
+
+```{r format clean data, echo=FALSE}
+
+# Remove repeat and missing-values observations
+parks <- subset(parks, !is.na(visits))
+
+# Subset parks on National Parks and National Monuments only
+parks <- subset(parks, grepl("NP\\b", park_name) & 
+                  !grepl("&", park_name))
+
+# Expand park designations
+parks$park_name <- sapply(parks$park_name, function(name){
+  gsub("NP", "National Park", name)
+})
+
+# Year to class integer
+parks$year <- as.integer(as.character(parks$year))
+```
+
+```{r get geo-data, echo=FALSE}
+
+# Load dataframe with park coordinates
+park_coords_df <- read_csv("parks_coords.csv")
+
+# Subset on national parks and monuments
+park_coords_df <- subset(park_coords_df, 
+                         grepl("National Park\\b", park_name) &
+                         !grepl("&", park_name))
+
+# Subset for continental US
+park_coords_df <- subset(park_coords_df, 
+                         lon > -125 & lon < 65 &
+                           lat > 25 & lat < 50)
+
+```
+
+```{r merge data, echo=FALSE}
+
+# Merge datasets, some parks in park visitation dataset dropped bc not in coord df
+parks_full <- merge(parks, park_coords_df, by="park_name")
+
+# Park code to uppercase
+parks_full$park_number <- toupper(parks_full$park_number)
+
+```
+
+```{r get park boundary shapes, echo=FALSE}
+
+# Load shape files for park boundaries
+park_bounds <- readOGR("nps_boundary.shp", layer = "nps_boundary",
+                       verbose = FALSE)
+
+# Subset boundary files on selected parks and monuments
+park_bounds <- subset(park_bounds, UNIT_CODE %in% parks_full$park_number)
+```
+
+
+## Annual National Park Visitation by Year
+
+```{r user interface, echo=FALSE}
+
+# Define UI for application 
+ui <- fluidPage(leafletOutput("parkMap"),
+                      absolutePanel(bottom = 0,
+                                    left = 25,
+                                    draggable = TRUE,
+                                    sliderInput("years",
+                                                "Year of Data Summary:",
+                                                min = min(parks_full$year),
+                                                max = max(parks_full$year),
+                                                value = min(parks_full$year),
+                                                sep = "",
+                                                step = 1,
+                                                animate=TRUE)))
+
+
+```
+
+```{r server, echo=FALSE}
+
+# Define required server logic 
+server <- function(input, output){
+
+  # Subset data on selected year
+  parks_react <- reactive({
+    parks_full[parks_full$year==input$years,]
+  }) 
+  
+  #Build base map
+  output$parkMap <- renderLeaflet({
+    
+  # Instantiate and build leaflet app
+        parks_full%>% leaflet()%>%
+          addTiles()%>%
+          addPolygons(color = "grey50", weight = 1, smoothFactor = 0.5,
+                  opacity = 1.0, fillOpacity = 0.5,
+                  fillColor = "blue", data = park_bounds)%>%
+          fitBounds(lng1=-124.848974, lat1=24.396308, 
+                   lng2=-66.885444, lat2=49.384358)
+
+  })
+    
+  observe({
+    # Add annual plot data to base map
+    
+    # Get base map
+    leafletProxy("parkMap", data=parks_react())%>%
+      
+    # Clear any previously plotted markers
+    clearMarkers()%>%
+      
+    # Plot new markers by selected year
+    addCircleMarkers(radius = ~visits/150000+10, 
+                     color = "purple",
+                     popup = paste("<center>", 
+                                   parks_react()$park_name, "<br>",
+                                   "Visitors in ", parks_react()$year, ": ", 
+                                   format(parks_react()$visits, big.mark = ","), 
+                                   "<br>",
+                                   "</center"))
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
